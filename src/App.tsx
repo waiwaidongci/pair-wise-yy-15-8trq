@@ -1,126 +1,186 @@
+import { useEffect, useMemo, useState } from "react";
 import "./styles.css";
+import { bloodlines, toContact } from "./lib/calc";
+import { loadState, saveState } from "./lib/storage";
+import type { Batch, Health, LoftState } from "./lib/types";
+import BatchesPage from "./pages/Batches";
+import ContactPage from "./pages/Contact";
+import OverviewPage from "./pages/Overview";
+import PigeonsPage from "./pages/Pigeons";
+import RankingPage from "./pages/Ranking";
 
-const project = {
-  "sourceNo": 9,
-  "id": "hxyfront-62014",
-  "port": 62014,
-  "title": "赛鸽训放记录",
-  "domain": "赛鸽训放",
-  "prompt": "我想做一个面向赛鸽棚的训放记录前端工具，鸽主可以记录足环号、血统、训放地点、放飞距离、天气、归巢时间、飞行速度、健康状态和配对记录。页面需要有鸽棚总览、训放成绩排行、未归巢提醒、单羽赛鸽档案和按血统筛选的历史成绩。",
-  "palette": [
-    "#1d4ed8",
-    "#64748b",
-    "#f97316"
-  ],
-  "metrics": [
-    "归巢率",
-    "平均速度",
-    "未归巢",
-    "血统档案"
-  ],
-  "filters": [
-    "短距离",
-    "中距离",
-    "长距离",
-    "种鸽"
-  ],
-  "fields": [
-    "足环号",
-    "血统",
-    "训放地点",
-    "放飞距离",
-    "归巢时间",
-    "健康状态"
-  ],
-  "records": [
-    [
-      "CHN-24-001839",
-      "詹森系",
-      "80km，晴",
-      "均速1180m/min"
-    ],
-    [
-      "CHN-24-002114",
-      "凡龙系",
-      "120km，侧风",
-      "归巢延迟"
-    ],
-    [
-      "CHN-23-008771",
-      "种鸽",
-      "配对记录更新",
-      "健康正常"
-    ]
-  ]
-};
+let seq = 0;
+const uid = () =>
+  `${Date.now().toString(36)}${(seq++).toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
+/** 页面共用的数据操作；全部经由 setState → useEffect 落盘 */
+export interface Ops {
+  addPigeon: (input: { ring: string; bloodline: string; health: Health; mateId: string | null }) => void;
+  setHealth: (id: string, health: Health) => void;
+  setMate: (id: string, mateId: string | null) => void;
+  addBatch: (input: Omit<Batch, "id">) => string;
+  addEntry: (batchId: string, pigeonId: string) => void;
+  removeEntry: (entryId: string) => void;
+  setArrival: (entryId: string, iso: string | null) => void;
+  setSignal: (entryId: string, signal: boolean) => void;
+}
+
+type Tab = "overview" | "batches" | "ranking" | "contact" | "pigeons";
+
+const TABS: { key: Tab; label: string }[] = [
+  { key: "overview", label: "鸽棚总览" },
+  { key: "batches", label: "训放批次" },
+  { key: "ranking", label: "成绩排行" },
+  { key: "contact", label: "待联系" },
+  { key: "pigeons", label: "鸽籍档案" },
+];
 
 function App() {
+  const [state, setState] = useState<LoftState>(loadState);
+  const [tab, setTab] = useState<Tab>("overview");
+  const [bloodline, setBloodline] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+
+  // 保存：任何变更都写入 localStorage，重开仍保留
+  useEffect(() => saveState(state), [state]);
+
+  // 每 30 秒刷新一次“当前时刻”，待联系清单随时间推进
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(t);
+  }, []);
+
+  const ops: Ops = useMemo(
+    () => ({
+      addPigeon: (input) =>
+        setState((s) => {
+          const id = uid();
+          const pigeons = s.pigeons.map((p) => ({ ...p }));
+          if (input.mateId) {
+            const mate = pigeons.find((p) => p.id === input.mateId);
+            if (mate) {
+              const occupied = pigeons.find((p) => p.id === mate.mateId);
+              if (occupied) occupied.mateId = null;
+              mate.mateId = id;
+            }
+          }
+          return { ...s, pigeons: [...pigeons, { id, ...input }] };
+        }),
+      setHealth: (id, health) =>
+        setState((s) => ({
+          ...s,
+          pigeons: s.pigeons.map((p) => (p.id === id ? { ...p, health } : p)),
+        })),
+      // 配偶双向绑定：换新配偶时解除双方旧关系
+      setMate: (id, mateId) =>
+        setState((s) => {
+          const pigeons = s.pigeons.map((p) => ({ ...p }));
+          const me = pigeons.find((p) => p.id === id);
+          if (!me) return s;
+          const prev = pigeons.find((p) => p.id === me.mateId);
+          if (prev && prev.mateId === id) prev.mateId = null;
+          me.mateId = mateId;
+          if (mateId) {
+            const mate = pigeons.find((p) => p.id === mateId);
+            if (mate) {
+              const occupied = pigeons.find((p) => p.id === mate.mateId && p.id !== id);
+              if (occupied) occupied.mateId = null;
+              mate.mateId = id;
+            }
+          }
+          return { ...s, pigeons };
+        }),
+      addBatch: (input) => {
+        const id = uid();
+        setState((s) => ({ ...s, batches: [...s.batches, { id, ...input }] }));
+        return id;
+      },
+      addEntry: (batchId, pigeonId) =>
+        setState((s) =>
+          s.entries.some((e) => e.batchId === batchId && e.pigeonId === pigeonId)
+            ? s
+            : {
+                ...s,
+                entries: [
+                  ...s.entries,
+                  { id: uid(), batchId, pigeonId, arrivedAt: null, signal: true },
+                ],
+              }
+        ),
+      removeEntry: (entryId) =>
+        setState((s) => ({ ...s, entries: s.entries.filter((e) => e.id !== entryId) })),
+      setArrival: (entryId, iso) =>
+        setState((s) => ({
+          ...s,
+          entries: s.entries.map((e) => (e.id === entryId ? { ...e, arrivedAt: iso } : e)),
+        })),
+      setSignal: (entryId, signal) =>
+        setState((s) => ({
+          ...s,
+          entries: s.entries.map((e) => (e.id === entryId ? { ...e, signal } : e)),
+        })),
+    }),
+    []
+  );
+
+  const lines = bloodlines(state);
+  const contactCount = toContact(state, now, bloodline).length;
+
   return (
     <main className="app">
-      <section className="hero">
-        <p>{project.id} · 源提示词{project.sourceNo} · Port {project.port}</p>
-        <h1>{project.title}</h1>
-        <span>{project.prompt}</span>
-      </section>
-
-      <section className="metrics">
-        {project.metrics.map((metric: string, index: number) => (
-          <article key={metric}>
-            <small>{metric}</small>
-            <strong>{[28, 6, 14, 91][index] ?? 10}</strong>
-          </article>
-        ))}
-      </section>
-
-      <section className="workspace">
-        <aside className="panel">
-          <h2>{project.domain}分类</h2>
-          <div className="chips">
-            {project.filters.map((item: string) => (
-              <button key={item}>{item}</button>
-            ))}
-          </div>
-        </aside>
-
-        <section className="panel form-panel">
-          <div className="heading">
-            <div>
-              <p>专业字段</p>
-              <h2>新增记录</h2>
-            </div>
-            <button className="primary">保存记录</button>
-          </div>
-          <div className="field-grid">
-            {project.fields.map((field: string) => (
-              <label key={field}>
-                <span>{field}</span>
-                <input placeholder={"填写" + field} />
-              </label>
-            ))}
-          </div>
-        </section>
-      </section>
-
-      <section className="panel">
-        <div className="heading">
-          <div>
-            <p>近期记录</p>
-            <h2>工作台摘要</h2>
-          </div>
-          <button>导出CSV</button>
+      <header className="panel topbar">
+        <div>
+          <p className="eyebrow">hxyfront-62014 · 赛鸽训放</p>
+          <h1>鸽棚训放台账</h1>
         </div>
-        <div className="records">
-          {project.records.map((record: string[], index: number) => (
-            <article key={record.join("-")}>
-              <b>{String(index + 1).padStart(2, "0")}</b>
-              <div>
-                <h3>{record[0]}</h3>
-                <p>{record.slice(1).join(" · ")}</p>
-              </div>
-            </article>
+        <nav className="tabs">
+          {TABS.map((t) => (
+            <button
+              key={t.key}
+              className={`tab ${tab === t.key ? "active" : ""}`}
+              onClick={() => setTab(t.key)}
+            >
+              {t.label}
+              {t.key === "contact" && contactCount > 0 && (
+                <span className="badge">{contactCount}</span>
+              )}
+            </button>
+          ))}
+        </nav>
+        <div className="filterbar">
+          <span>血统筛选</span>
+          <button
+            className={`chip ${bloodline === null ? "active" : ""}`}
+            onClick={() => setBloodline(null)}
+          >
+            全部
+          </button>
+          {lines.map((l) => (
+            <button
+              key={l}
+              className={`chip ${bloodline === l ? "active" : ""}`}
+              onClick={() => setBloodline(l)}
+            >
+              {l}
+            </button>
           ))}
         </div>
-      </section>
+      </header>
+
+      {tab === "overview" && (
+        <OverviewPage
+          state={state}
+          now={now}
+          bloodline={bloodline}
+          onOpenContact={() => setTab("contact")}
+        />
+      )}
+      {tab === "batches" && <BatchesPage state={state} now={now} ops={ops} />}
+      {tab === "ranking" && <RankingPage state={state} bloodline={bloodline} />}
+      {tab === "contact" && (
+        <ContactPage state={state} now={now} bloodline={bloodline} ops={ops} />
+      )}
+      {tab === "pigeons" && <PigeonsPage state={state} ops={ops} />}
     </main>
   );
 }
