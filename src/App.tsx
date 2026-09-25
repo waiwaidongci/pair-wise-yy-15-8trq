@@ -1,128 +1,162 @@
+import { useEffect, useState } from "react";
 import "./styles.css";
+import { StoreProvider, useStore } from "./store/store";
+import { useNow } from "./hooks/useNow";
+import { bloodlineList, contactList, ALL_BLOODLINES } from "./lib/calc";
+import Overview from "./pages/Overview";
+import Batches from "./pages/Batches";
+import Ranking from "./pages/Ranking";
+import Contacts from "./pages/Contacts";
+import Pigeons from "./pages/Pigeons";
 
-const project = {
-  "sourceNo": 9,
-  "id": "hxyfront-62014",
-  "port": 62014,
-  "title": "赛鸽训放记录",
-  "domain": "赛鸽训放",
-  "prompt": "我想做一个面向赛鸽棚的训放记录前端工具，鸽主可以记录足环号、血统、训放地点、放飞距离、天气、归巢时间、飞行速度、健康状态和配对记录。页面需要有鸽棚总览、训放成绩排行、未归巢提醒、单羽赛鸽档案和按血统筛选的历史成绩。",
-  "palette": [
-    "#1d4ed8",
-    "#64748b",
-    "#f97316"
-  ],
-  "metrics": [
-    "归巢率",
-    "平均速度",
-    "未归巢",
-    "血统档案"
-  ],
-  "filters": [
-    "短距离",
-    "中距离",
-    "长距离",
-    "种鸽"
-  ],
-  "fields": [
-    "足环号",
-    "血统",
-    "训放地点",
-    "放飞距离",
-    "归巢时间",
-    "健康状态"
-  ],
-  "records": [
-    [
-      "CHN-24-001839",
-      "詹森系",
-      "80km，晴",
-      "均速1180m/min"
-    ],
-    [
-      "CHN-24-002114",
-      "凡龙系",
-      "120km，侧风",
-      "归巢延迟"
-    ],
-    [
-      "CHN-23-008771",
-      "种鸽",
-      "配对记录更新",
-      "健康正常"
-    ]
-  ]
-};
+export type Tab = "overview" | "batches" | "ranking" | "contacts" | "pigeons";
 
-function App() {
+const TABS: { key: Tab; label: string; icon: string }[] = [
+  { key: "overview", label: "鸽棚总览", icon: "🏠" },
+  { key: "batches", label: "开笼批次", icon: "🕊️" },
+  { key: "ranking", label: "成绩排行", icon: "🏆" },
+  { key: "contacts", label: "待联系", icon: "📡" },
+  { key: "pigeons", label: "赛鸽档案", icon: "📇" },
+];
+
+function Shell() {
+  const { state, dispatch } = useStore();
+  const now = useNow();
+  const [tab, setTab] = useState<Tab>("overview");
+  const [pigeonId, setPigeonId] = useState<string | null>(null);
+
+  const bloodlines = bloodlineList(state.pigeons);
+  // 存档里选中的血统被删掉后回退到全部
+  useEffect(() => {
+    if (
+      state.bloodlineFilter !== ALL_BLOODLINES &&
+      !bloodlines.includes(state.bloodlineFilter)
+    ) {
+      dispatch({ type: "set_filter", bloodline: ALL_BLOODLINES });
+    }
+  }, [bloodlines, state.bloodlineFilter, dispatch]);
+
+  const contactCount = contactList(state, now).length;
+
+  function go(next: Tab) {
+    setPigeonId(null);
+    setTab(next);
+  }
+
+  function selectPigeon(id: string | null) {
+    setPigeonId(id);
+    if (id) setTab("pigeons");
+  }
+
   return (
-    <main className="app">
-      <section className="hero">
-        <p>{project.id} · 源提示词{project.sourceNo} · Port {project.port}</p>
-        <h1>{project.title}</h1>
-        <span>{project.prompt}</span>
-      </section>
-
-      <section className="metrics">
-        {project.metrics.map((metric: string, index: number) => (
-          <article key={metric}>
-            <small>{metric}</small>
-            <strong>{[28, 6, 14, 91][index] ?? 10}</strong>
-          </article>
-        ))}
-      </section>
-
-      <section className="workspace">
-        <aside className="panel">
-          <h2>{project.domain}分类</h2>
-          <div className="chips">
-            {project.filters.map((item: string) => (
-              <button key={item}>{item}</button>
-            ))}
-          </div>
-        </aside>
-
-        <section className="panel form-panel">
-          <div className="heading">
-            <div>
-              <p>专业字段</p>
-              <h2>新增记录</h2>
-            </div>
-            <button className="primary">保存记录</button>
-          </div>
-          <div className="field-grid">
-            {project.fields.map((field: string) => (
-              <label key={field}>
-                <span>{field}</span>
-                <input placeholder={"填写" + field} />
-              </label>
-            ))}
-          </div>
-        </section>
-      </section>
-
-      <section className="panel">
-        <div className="heading">
-          <div>
-            <p>近期记录</p>
-            <h2>工作台摘要</h2>
-          </div>
-          <button>导出CSV</button>
+    <div className="layout">
+      <aside className="sidebar">
+        <div className="brand">
+          <h1>鸽棚台账</h1>
+          <p>开笼 · 归巢 · 分速 · 配对</p>
         </div>
-        <div className="records">
-          {project.records.map((record: string[], index: number) => (
-            <article key={record.join("-")}>
-              <b>{String(index + 1).padStart(2, "0")}</b>
-              <div>
-                <h3>{record[0]}</h3>
-                <p>{record.slice(1).join(" · ")}</p>
-              </div>
-            </article>
+
+        <nav className="nav">
+          {TABS.map((t) => (
+            <button
+              key={t.key}
+              className={`nav-item ${tab === t.key ? "nav-on" : ""}`}
+              onClick={() => go(t.key)}
+            >
+              <span className="nav-icon">{t.icon}</span>
+              {t.label}
+              {t.key === "contacts" && contactCount > 0 && (
+                <span className="nav-badge">{contactCount}</span>
+              )}
+            </button>
           ))}
+        </nav>
+
+        <div className="filter-box">
+          <h2>血统筛选</h2>
+          <p className="filter-hint">总览、排行、待联系数量同步更新</p>
+          <div className="chips">
+            <button
+              className={
+                state.bloodlineFilter === ALL_BLOODLINES ? "chip-on" : ""
+              }
+              onClick={() =>
+                dispatch({ type: "set_filter", bloodline: ALL_BLOODLINES })
+              }
+            >
+              全部血统
+            </button>
+            {bloodlines.map((b) => (
+              <button
+                key={b}
+                className={state.bloodlineFilter === b ? "chip-on" : ""}
+                onClick={() => dispatch({ type: "set_filter", bloodline: b })}
+              >
+                {b}
+              </button>
+            ))}
+          </div>
         </div>
-      </section>
-    </main>
+
+        <div className="sidebar-foot">
+          <button
+            className="reset-btn"
+            onClick={() => {
+              if (
+                window.confirm("清空当前全部记录并恢复演示数据？此操作不可撤销。")
+              ) {
+                dispatch({ type: "reset" });
+                setPigeonId(null);
+                setTab("overview");
+              }
+            }}
+          >
+            恢复演示数据
+          </button>
+          <p>数据保存在本机浏览器，重开不丢失</p>
+        </div>
+      </aside>
+
+      <main className="content">
+        <header className="topbar">
+          <div>
+            <h2>{TABS.find((t) => t.key === tab)?.label}</h2>
+            {state.bloodlineFilter !== ALL_BLOODLINES && (
+              <span className="filter-tag">
+                血统：{state.bloodlineFilter}
+                <button
+                  onClick={() =>
+                    dispatch({ type: "set_filter", bloodline: ALL_BLOODLINES })
+                  }
+                >
+                  ✕ 清除
+                </button>
+              </span>
+            )}
+          </div>
+          <span className="clock">
+            {new Date(now).toLocaleString("zh-CN", { hour12: false })}
+          </span>
+        </header>
+
+        {tab === "overview" && (
+          <Overview go={go} selectPigeon={selectPigeon} />
+        )}
+        {tab === "batches" && <Batches selectPigeon={selectPigeon} />}
+        {tab === "ranking" && <Ranking selectPigeon={selectPigeon} />}
+        {tab === "contacts" && <Contacts selectPigeon={selectPigeon} />}
+        {tab === "pigeons" && (
+          <Pigeons selectedId={pigeonId} selectPigeon={selectPigeon} />
+        )}
+      </main>
+    </div>
   );
 }
 
-export default App;
+export default function App() {
+  return (
+    <StoreProvider>
+      <Shell />
+    </StoreProvider>
+  );
+}
